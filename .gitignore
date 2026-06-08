@@ -1,0 +1,15 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/TaskApp.API/bin/Debug/net8.0
+/TaskApp.API/obj
+/TaskApp.Application/bin/Debug/net8.0
+/TaskApp.Application/obj
+/TaskApp.Domain/bin/Debug/net8.0
+/TaskApp.Domain/obj
+/TaskApp.Infrastructure/bin/Debug/net8.0
+/TaskApp.Infrastructure/obj
+/TaskApp.Tests/bin/Debug/net8.0
+/TaskApp.Tests/obj
