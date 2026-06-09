@@ -1,0 +1,392 @@
+You are helping me build a fullstack application for a technical interview exercise.
+I will describe the full requirements. Before writing any code, output a proposed
+solution plan (architecture, project structure, tech decisions) and wait for my
+approval.
+
+---
+
+## User Story
+
+As a user, I want to manage my daily tasks through a web application where I can
+register an account, log in securely, and perform full CRUD operations on my tasks,
+so that I can stay organized and track my work effectively.
+
+---
+
+## Tech Stack
+
+- Backend: .NET 8, ASP.NET Core Web API, C#
+- Database: MongoDB using the official MongoDB.Driver NuGet package
+  (NO Entity Framework, NO Dapper, NO Mediator pattern)
+- Frontend: React (with TypeScript), using Vite as the build tool
+- Auth: JWT Bearer tokens
+- Testing: xUnit + Moq for unit tests, real MongoDB for repository integration tests
+
+---
+
+## Architecture: Clean Architecture (strictly enforced)
+
+Structure the solution into the following projects:
+
+1. `TaskApp.Domain` — Entities, interfaces, enums, domain exceptions. No dependencies.
+2. `TaskApp.Application` — Business logic, validation, service interfaces, DTO definitions.
+   Depends only on Domain.
+3. `TaskApp.Infrastructure` — MongoDB repositories, JWT generation, password hashing,
+   current user service. Implements Domain interfaces. Depends on Domain.
+4. `TaskApp.API` — ASP.NET Core Web API, controllers, middleware registration.
+   Depends on Application + Infrastructure.
+5. `TaskApp.Tests` — xUnit unit tests for Application layer (Moq),
+   integration tests for repositories (real MongoDB test database).
+6. `taskapp-frontend` — React + TypeScript frontend (separate folder, Vite).
+
+---
+
+## Backend Requirements
+
+### MongoDB Collections
+
+- `tasks` collection:
+  - `_id` (ObjectId, primary key)
+  - `title` (string, required)
+  - `description` (string)
+  - `status` (enum: Pending, InProgress, Completed)
+  - `due_date` (DateTime)
+  - `userId` (string, reference to user)
+  - `createdAt`, `updatedAt`
+
+- `users` collection:
+  - `_id` (ObjectId, primary key)
+  - `username` (string, unique, required)
+  - `email` (string, unique, required)
+  - `passwordHash` (string — BCrypt hash, never plaintext)
+  - `role` (UserRole enum: User, Admin)
+  - `createdAt`
+  - `failedLoginAttempts` (int, default 0)
+  - `isLocked` (bool, default false)
+  - `lockedAt` (DateTime?, null if not locked)
+
+### API 1 — Tasks API (requires JWT auth)
+- GET    /api/tasks          → Get all tasks for authenticated user
+- GET    /api/tasks/{id}     → Get task by ID
+- POST   /api/tasks          → Create task
+- PUT    /api/tasks/{id}     → Update task
+- DELETE /api/tasks/{id}     → Delete task
+
+### API 2 — Auth/Users API
+- POST /api/auth/register        → Create user (public)
+- POST /api/auth/login           → Login, returns JWT (public)
+- GET  /api/auth/me              → Get current user profile (authorized)
+- GET  /api/auth/ping            → Health check (public, non-authorized)
+- POST /api/auth/unlock/{userId} → Manually unlock a locked account (Admin role only)
+
+### Business Logic Rules (Application layer only)
+- Task title is required and max 200 chars
+- Due date cannot be in the past on creation
+- Users can only access/modify their own tasks
+- Passwords must be at least 8 characters
+- Email must be valid format
+- Username must be unique (validate before insert)
+
+---
+
+## Architecture & Design Standards
+
+### 1. Strongly Typed UserRole Enum
+Do NOT use string for roles. Define in Domain layer:
+
+  public enum UserRole { User, Admin }
+
+The User entity must use:
+  public UserRole Role { get; set; }
+
+Never use magic strings like "Admin" or "User" anywhere in the codebase.
+
+---
+
+### 2. JWT Token Generation Abstraction
+Application layer defines:
+
+  public interface IJwtTokenGenerator
+  {
+      string GenerateToken(User user);
+  }
+
+Infrastructure layer implements:
+  public class JwtTokenGenerator : IJwtTokenGenerator
+
+UserService depends on IJwtTokenGenerator — it must NOT contain
+any JWT creation logic directly. JWT logic belongs in Infrastructure.
+
+---
+
+### 3. Current User Abstraction
+Application layer defines:
+
+  public interface ICurrentUserService
+  {
+      string UserId { get; }
+      string Username { get; }
+      UserRole Role { get; }
+  }
+
+API layer implements:
+  public class CurrentUserService : ICurrentUserService
+  (reads from IHttpContextAccessor claims)
+
+All business services must obtain the authenticated user through
+ICurrentUserService — never read HttpContext claims directly in
+controllers or services.
+
+---
+
+### 4. Repository Tests — Integration over Mocks
+Do NOT mock IMongoCollection<T> for repository tests. Instead:
+- Use a dedicated test MongoDB database (e.g. "taskapp_test")
+- Write integration tests that run against a real MongoDB instance
+- Tests must cover: Insert, Read, Update, Delete, user lookup,
+  and unique constraint behavior (duplicate email/username)
+- Spin up and tear down test data in test fixtures using IAsyncLifetime
+
+---
+
+### 5. Architecture Decisions in README
+Add an "Architecture Decisions" section to README.md documenting
+the rationale behind:
+- MongoDB over Entity Framework (and why raw driver)
+- Clean Architecture layer separation
+- Repository Pattern
+- JWT Authentication
+- UserRole enum over string roles
+- IJwtTokenGenerator / ICurrentUserService abstractions
+- Account Lockout persisted in MongoDB
+- Rate Limiting with .NET 8 built-in middleware
+- React + TypeScript frontend
+- TDD approach
+
+Goal: demonstrate engineering judgment, not just implementation.
+
+---
+
+### 6. Dependency Inversion for All Infrastructure Concerns
+The Application layer must define interfaces for ALL infrastructure concerns:
+  - IJwtTokenGenerator
+  - IPasswordHasher
+  - ICurrentUserService
+  - ITaskRepository
+  - IUserRepository
+
+Infrastructure layer provides all implementations.
+Application services depend ONLY on these abstractions — never on concrete classes.
+
+---
+
+### 7. Thin Controllers (strictly enforced)
+Controllers must ONLY:
+  1. Validate ModelState
+  2. Call the appropriate application service
+  3. Return the HTTP response
+
+Controllers must NEVER contain:
+  - Business rules or validation logic
+  - MongoDB queries
+  - Password hashing
+  - JWT generation
+  - Authorization logic beyond [Authorize] / [AllowAnonymous] attributes
+  - Direct use of HttpContext claims (use ICurrentUserService instead)
+
+---
+
+### 8. Explicit Types Throughout (strictly enforced)
+Avoid excessive use of var. Always prefer explicit types:
+  string username = ...
+  List<TaskItem> tasks = ...
+  TaskResponseDto response = ...
+  UserResponseDto user = ...
+
+Use var ONLY when the type is immediately obvious from the right-hand side:
+  var tasks = new List<TaskItem>();
+
+---
+
+## Security: Account Lockout
+
+Implement account lockout logic in the Application layer (UserService),
+tracked in the `users` MongoDB collection.
+
+Rules:
+- On each failed login attempt, increment `failedLoginAttempts` for that user
+- After 3 consecutive failed attempts, set `isLocked = true` and record `lockedAt`
+- Locked accounts are locked PERMANENTLY until manually unlocked — no automatic
+  time-based unlock
+- On a successful login, reset `failedLoginAttempts` to 0
+- If a locked account attempts to log in, return HTTP 403 with message:
+  "Account is locked due to too many failed attempts. Please contact an administrator."
+- The unlock endpoint POST /api/auth/unlock/{userId} requires UserRole.Admin claim
+- On unlock, reset `isLocked = false`, `failedLoginAttempts = 0`, `lockedAt = null`
+
+Write unit tests for:
+- Lockout triggers after exactly 3 failed attempts
+- Login blocked when isLocked is true
+- Successful login resets the counter
+- Unlock endpoint returns 403 for non-Admin users
+- Unlock resets all lockout fields correctly
+
+---
+
+## Security: Rate Limiting
+
+Use .NET 8's built-in System.Threading.RateLimiting middleware
+(Microsoft.AspNetCore.RateLimiting). No third-party packages.
+
+Two named Fixed Window policies:
+
+1. "auth-policy" — applied to all /api/auth/* endpoints:
+   - 10 requests per minute per IP address
+   - On limit exceeded: HTTP 429 with JSON:
+     { "error": "Too many requests. Please wait before trying again." }
+
+2. "general-policy" — applied globally to all other endpoints:
+   - 60 requests per minute per IP address
+   - Same JSON 429 response format
+
+Implementation notes:
+- Partition key: httpContext.Connection.RemoteIpAddress
+- Register both policies in Program.cs via builder.Services.AddRateLimiter
+- Apply "auth-policy" via [EnableRateLimiting("auth-policy")] on AuthController
+- Apply "general-policy" as the default policy on app.UseRateLimiter()
+- Configure OnRejected to return JSON with Content-Type: application/json
+  (not the default plain text response)
+
+Write unit/integration tests for:
+- RateLimiter middleware is registered correctly
+- Auth endpoints return 429 after exceeding the limit
+- Correct JSON body is returned on 429 responses
+
+---
+
+## Unit & Integration Tests (TDD — write failing test first)
+
+Application layer (xUnit + Moq):
+- TaskService: create, update, delete, validation rules, ownership enforcement
+- UserService: register validation, login, password hashing, lockout logic,
+  unlock logic, Admin role enforcement
+
+Repository layer (xUnit + real MongoDB "taskapp_test" database):
+- TaskRepository: Insert, Read, Update, Delete, filter by userId
+- UserRepository: Insert, Read, lookup by email/username, unique constraint behavior
+- Use IAsyncLifetime for test setup and teardown
+
+API layer:
+- Controller tests using WebApplicationFactory with mocked application services
+- Rate limiting: 429 response format and middleware registration
+- Auth lockout: 403 response when account is locked
+
+---
+
+## Frontend Requirements (React + TypeScript + Vite)
+
+Pages/Views:
+- `/login` — Login form; show "Your account is locked. Please contact an
+  administrator." on 403 response
+- `/register` — Register form
+- `/tasks` — Task list with create, edit, delete, filter by status (protected route)
+- `/tasks/new` — Create task form
+- `/tasks/:id/edit` — Edit task form
+
+Key criteria:
+- Responsive and user-friendly (use shadcn/ui or MUI)
+- JWT stored in memory or httpOnly cookie — NOT localStorage
+- Axios with auth interceptor that attaches Bearer token on every request
+- Global Axios response interceptor:
+  - 429 → show toast/alert: "Too many requests — please slow down"
+  - 403 on login → show: "Your account is locked. Please contact an administrator."
+- Component structure: components/, pages/, services/, hooks/
+- No console warnings in the browser
+
+---
+
+## Seed Data
+
+Seeder runs on app startup in development mode only.
+
+Users:
+- Demo user: username `demo`, email `demo@taskapp.com`,
+  password `Demo1234!`, role User
+- Admin user: username `admin`, email `admin@taskapp.com`,
+  password `Admin1234!`, role Admin
+
+Tasks (assigned to demo user):
+- 5 sample tasks with varied titles, descriptions,
+  statuses (Pending/InProgress/Completed), and due dates
+
+---
+
+## README
+
+Generate a README.md with:
+- Project overview and user story
+- Prerequisites: Node.js, .NET 8, MongoDB
+- Setup and run instructions for backend and frontend
+- Demo credentials (demo user + admin user)
+- Architecture explanation with layer diagram
+- Architecture Decisions section (rationale for each major choice)
+- Security features: account lockout and rate limiting
+- Notes on AI tool usage (Claude Code) and how output was validated
+
+---
+
+## Project Memory & Changelog
+
+Maintain two files at the project root at all times:
+
+### PROJECT_MEMORY.md
+Source of truth for what has been built. Update after every completed
+feature. Must always contain:
+- Current project structure (directory tree)
+- All implemented endpoints with HTTP verb, route, auth requirement, status
+- All MongoDB collections and their current fields
+- All services and their public methods
+- All interfaces and their implementations
+- All NuGet packages and npm dependencies in use
+- Any known issues or pending decisions
+- Seed data credentials
+
+### CHANGELOG.md
+Append an entry every time a feature, fix, or change is completed.
+Format:
+
+  ## [YYYY-MM-DD] — Short title
+  - What was built or changed
+  - Files created or modified
+  - Tests added
+  - Any deviations from the original plan and why
+
+---
+
+## Session Start Checklist
+At the beginning of every new Claude Code session, before writing any code:
+1. Read CLAUDE.md
+2. Read PROJECT_MEMORY.md — understand what is already built
+3. Read CHANGELOG.md — understand recent history
+4. Output a short summary of current state before proceeding
+
+---
+
+## Hard Constraints & Reminders
+- Do NOT use Entity Framework, Dapper, or Mediator anywhere
+- Do NOT write MongoDB queries outside the Repository layer
+- Do NOT put business logic in controllers or repositories
+- Do NOT use magic strings for roles — always UserRole enum
+- Do NOT read HttpContext claims directly — always use ICurrentUserService
+- Do NOT store passwords in plaintext — always BCrypt via IPasswordHasher
+- Do NOT store JWT in localStorage — memory or httpOnly cookie only
+- Do NOT mock IMongoCollection<T> — use real MongoDB for repository tests
+- Follow TDD: write the failing test first, then the implementation
+- Rate limiting uses only .NET 8 built-in middleware — no extra NuGet packages
+- Account lockout state persisted in MongoDB, not in-memory
+- Explicit types preferred over var throughout the entire solution
+
+---
+
+Start by outputting the full proposed solution plan with project structure and
+tech decisions. Wait for my go-ahead before generating any code.
